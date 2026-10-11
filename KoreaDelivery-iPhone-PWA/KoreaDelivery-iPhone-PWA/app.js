@@ -1,0 +1,20 @@
+'use strict';
+const $=id=>document.getElementById(id);
+const saved=JSON.parse(localStorage.getItem('korea-gps-settings')||'{}');
+$('url').value=saved.url||'https://zkfhemhngrtwgwmtinuz.supabase.co';
+$('key').value=saved.key||'';
+$('rider').value=saved.rider||'TEST001';
+let watchId=null, active=false, latest=null, sending=false, lastSentAt=0, lastSentFixAt=0;
+function show(status,message,kind=''){$('status').textContent=status;$('message').textContent=message;$('dot').className='dot '+kind;}
+function config(){return {url:$('url').value.trim().replace(/\/+$/,''),key:$('key').value.trim(),rider:$('rider').value.trim()};}
+function validate(c){if(!/^https:\/\/[a-z0-9-]+\.supabase\.co$/i.test(c.url))throw Error('Supabase URL을 확인하세요.');if(!c.key||!(/^(sb_publishable_|eyJ)/.test(c.key)))throw Error('Supabase 공개 키를 입력하세요.');if(!/^[a-zA-Z0-9_-]{1,64}$/.test(c.rider))throw Error('기사 ID는 영문, 숫자, - 또는 _ 만 사용할 수 있습니다.');}
+$('save').onclick=()=>{try{const c=config();validate(c);localStorage.setItem('korea-gps-settings',JSON.stringify(c));show('설정 저장됨','운행 시작을 눌러 위치 공유를 시작하세요.');$('settings').open=false;}catch(e){show('설정 확인 필요',e.message,'error');}};
+async function patch(payload){const c=config();validate(c);const url=`${c.url}/rest/v1/rider_locations?rider_id=eq.${encodeURIComponent(c.rider)}`;const headers={'apikey':c.key,'Content-Type':'application/json','Prefer':'return=representation'};if(c.key.startsWith('eyJ'))headers.Authorization=`Bearer ${c.key}`;const response=await fetch(url,{method:'PATCH',headers,body:JSON.stringify(payload),cache:'no-store'});const body=await response.text();if(!response.ok)throw Error(`서버 오류 ${response.status}: ${body.slice(0,160)}`);let data;try{data=JSON.parse(body)}catch{data=[]}if(!Array.isArray(data)||data.length===0)throw Error('수정된 기사 행이 없습니다. 기사 ID와 Supabase RLS 정책을 확인하세요.');return data;}
+async function sendLocation(position){if(!active||sending)return;const {latitude,longitude,accuracy}=position.coords;if(!Number.isFinite(latitude)||!Number.isFinite(longitude))return;const now=Date.now();if(now-lastSentAt<4500)return;sending=true;try{await patch({latitude,longitude,accuracy,is_sharing:true,last_seen_at:new Date().toISOString()});lastSentAt=Date.now();lastSentFixAt=position.timestamp;$('last').textContent=new Date().toLocaleTimeString('ko-KR');show('위치 공유 중','관리자 서버로 GPS 전송 성공','active');}catch(e){show('GPS 전송 실패',e.message,'error')}finally{sending=false;}}
+function onPosition(p){if(!active)return;latest=p;$('lat').textContent=p.coords.latitude.toFixed(6);$('lng').textContent=p.coords.longitude.toFixed(6);$('accuracy').textContent=Math.round(p.coords.accuracy)+'m';sendLocation(p);}
+function onError(e){show('GPS 수신 오류',e.message||'위치 권한 및 GPS 설정을 확인하세요.','error');}
+$('start').onclick=()=>{try{validate(config());if(!window.isSecureContext)throw Error('HTTPS 주소에서 실행해야 합니다.');if(!navigator.geolocation)throw Error('이 브라우저는 GPS를 지원하지 않습니다.');}catch(e){show('시작할 수 없음',e.message,'error');$('settings').open=true;return;}if(active)return;active=true;$('start').disabled=true;$('stop').disabled=false;show('위치 확인 중','아이폰 위치 접근을 허용하세요.');watchId=navigator.geolocation.watchPosition(onPosition,onError,{enableHighAccuracy:true,maximumAge:0,timeout:20000});};
+$('stop').onclick=async()=>{if(!active)return;active=false;if(watchId!==null){navigator.geolocation.clearWatch(watchId);watchId=null;}$('start').disabled=false;$('stop').disabled=true;show('위치 공유 종료 중','서버에 종료 상태를 전송하고 있습니다.');try{await patch({is_sharing:false,last_seen_at:new Date().toISOString()});show('위치 공유 중지됨','서버에 종료 상태가 반영되었습니다.');}catch(e){show('종료 상태 전송 실패','GPS는 중지됐지만 서버 상태 갱신 실패: '+e.message,'error');}};
+document.addEventListener('visibilitychange',()=>{if(active&&document.hidden)show('백그라운드 주의','아이폰에서 화면을 잠그거나 다른 앱으로 전환하면 GPS 전송이 중단될 수 있습니다.','error');});
+window.addEventListener('pageshow',()=>{if(active&&Date.now()-lastSentAt>20000)show('GPS 갱신 대기','화면 복귀 후 GPS 수신을 기다리는 중입니다.','error');});
+if('serviceWorker' in navigator)window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(()=>{}));
